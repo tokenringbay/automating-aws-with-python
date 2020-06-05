@@ -14,3 +14,4 @@ Webotron currently has the fololowing features:
 
 - List buckets
 - List contents of a bucket
+- Create and set ujp bucket
