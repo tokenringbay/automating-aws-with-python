@@ -1,30 +1,42 @@
 # -*- coding: utf-8 -*-
 
-"""Classes for S3 buckets."""
+"""Classes for S3 Buckets."""
 
-import mimetypes
 from pathlib import Path
+import mimetypes
+from functools import reduce
+
+import boto3
 from botocore.exceptions import ClientError
+
+from hashlib import md5
 import util
 
 
 class BucketManager:
     """Manage an S3 Bucket."""
 
+    CHUNK_SIZE = 8388608
+
     def __init__(self, session):
         """Create a BucketManager object."""
         self.session = session
         self.s3 = self.session.resource('s3')
+        self.transfer_config = boto3.s3.transfer.TransferConfig(
+            multipart_chunksize=self.CHUNK_SIZE,
+            multipart_threshold=self.CHUNK_SIZE
+        )
+        self.manifest = {}
 
     def get_region_name(self, bucket):
         """Get the bucket's region name."""
-        bucket_location = self.s3.meta.client.get_bucket_location(Bucket=bucket.name)
+        client = self.s3.meta.client
+        bucket_location = client.get_bucket_location(Bucket=bucket.name)
 
         return bucket_location["LocationConstraint"] or 'us-east-1'
 
     def get_bucket_url(self, bucket):
-        """Get website URL for a bucket."""
-        # we need to give it a region name the bucket is in not the one we are currently are in
+        """Get the website URL for this bucket."""
         return "http://{}.{}".format(
             bucket.name,
             util.get_endpoint(self.get_region_name(bucket)).host
@@ -44,34 +56,36 @@ class BucketManager:
         try:
             s3_bucket = self.s3.create_bucket(
                 Bucket=bucket_name,
-                CreateBucketConfiguration={'LocationConstraint': 'us-east-2'}
+                CreateBucketConfiguration={
+                    'LocationConstraint': self.session.region_name
+                }
             )
-            # should be 'CreateBucketConfiguration={'LocationConstraint': self.session.region_name}'
         except ClientError as error:
             if error.response['Error']['Code'] == 'BucketAlreadyOwnedByYou':
                 s3_bucket = self.s3.Bucket(bucket_name)
             else:
                 raise error
 
-        # we can return it
         return s3_bucket
-        # or we can store it in our bucket_manager object
 
     def set_policy(self, bucket):
         """Set bucket policy to be readable by everyone."""
         policy = """
-            {
-              "Version": "2012-10-17",
-              "Statement": [{
-              "Sid": "PublicReadGetObject",
-              "Effect": "Allow",
-              "Principal": "*",
-                  "Action": ["s3:GetObject"],
-                  "Resource": ["arn:aws:s3:::%s/*"]
-               }]
+        {
+          "Version":"2012-10-17",
+          "Statement":[{
+          "Sid":"PublicReadGetObject",
+          "Effect":"Allow",
+          "Principal": "*",
+              "Action":["s3:GetObject"],
+              "Resource":["arn:aws:s3:::%s/*"
+              ]
             }
+          ]
+        }
         """ % bucket.name
         policy = policy.strip()
+
         pol = bucket.Policy()
         pol.put(Policy=policy)
 
@@ -83,34 +97,75 @@ class BucketManager:
             },
             'IndexDocument': {
                 'Suffix': 'index.html'
-         }})
+            }
+        })
 
-    # upload_file doesn't rely on our bucket_manager at all
-    # def upload_file(self, bucket, path, key):
-    # so we can turn it to a static method
-    # as long as we give it a bucket it should work fine
+    def load_manifest(self, bucket):
+        """Load manifest for caching purposes."""
+        paginator = self.s3.meta.client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket.name):
+            for obj in page.get('Contents', []):
+                self.manifest[obj['Key']] = obj['ETag']
+
     @staticmethod
-    def upload_file(bucket, path, key):
+    def hash_data(data):
+        """Generate md5 hash for data."""
+        hash = md5()
+        hash.update(data)
+
+        return hash
+
+    def gen_etag(self, path):
+        """Generate etag for file."""
+        hashes = []
+
+        with open(path, 'rb') as f:
+            while True:
+                data = f.read(self.CHUNK_SIZE)
+
+                if not data:
+                    break
+
+                hashes.append(self.hash_data(data))
+
+        if not hashes:
+            return
+        elif len(hashes) == 1:
+            return '"{}"'.format(hashes[0].hexdigest())
+        else:
+            hash = self.hash_data(reduce(lambda x, y: x + y, (h.digest() for h in hashes)))
+            return '"{}-{}"'.format(hash.hexdigest(), len(hashes))
+
+    def upload_file(self, bucket, path, key):
         """Upload path to s3_bucket at key."""
         content_type = mimetypes.guess_type(key)[0] or 'text/plain'
+
+        etag = self.gen_etag(path)
+        if self.manifest.get(key, '') == etag:
+            print("Skipping {}, etags match".format(key))
+            return
 
         return bucket.upload_file(
             path,
             key,
             ExtraArgs={
                 'ContentType': content_type
-            })
+            },
+            Config=self.transfer_config
+        )
 
     def sync(self, pathname, bucket_name):
         """Sync contents of path to bucket."""
         bucket = self.s3.Bucket(bucket_name)
-        # to get full absolute path of a directory
+        self.load_manifest(bucket)
+
         root = Path(pathname).expanduser().resolve()
 
         def handle_directory(target):
             for p in target.iterdir():
-                if p.is_dir(): handle_directory(p)
-                # if p.is_file(): print("Path: {}\n Key: {}".format(p, p.relative_to(root)))
-                if p.is_file(): self.upload_file(bucket, str(p), str(p.relative_to(root)))
+                if p.is_dir():
+                    handle_directory(p)
+                if p.is_file():
+                    self.upload_file(bucket, str(p), str(p.relative_to(root)))
 
         handle_directory(root)
