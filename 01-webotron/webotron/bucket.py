@@ -28,6 +28,10 @@ class BucketManager:
         )
         self.manifest = {}
 
+    def get_bucket(self, bucket_name):
+        """Get a bucket by name."""
+        return self.s3.Bucket(bucket_name)
+
     def get_region_name(self, bucket):
         """Get the bucket's region name."""
         client = self.s3.meta.client
@@ -57,7 +61,7 @@ class BucketManager:
             s3_bucket = self.s3.create_bucket(
                 Bucket=bucket_name,
                 CreateBucketConfiguration={
-                    'LocationConstraint': self.session.region_name
+                    'LocationConstraint': 'us-east-2'
                 }
             )
         except ClientError as error:

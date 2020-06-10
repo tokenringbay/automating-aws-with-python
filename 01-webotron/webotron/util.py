@@ -1,6 +1,10 @@
+# -*- coding: utf-8 -*-
+
+"""Utilities for webotron."""
+
 from collections import namedtuple
 
-Endpoint = namedtuple('Endpoint',['name', 'host', 'zone'])
+Endpoint = namedtuple('Endpoint', ['name', 'host', 'zone'])
 
 region_to_endpoint = {
     'us-east-2': Endpoint('US East (Ohio)', 's3-website.us-east-2.amazonaws.com', 'Z2O1EMRO9K5GLX'),
@@ -25,7 +29,7 @@ region_to_endpoint = {
 
 
 def known_region(region):
-    """Returns true if this is a known region."""
+    """Return true if this is a known region."""
     return region in region_to_endpoint
     # returns true if the region is in the list of dictionary keys
 
