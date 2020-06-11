@@ -10,7 +10,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from hashlib import md5
-import util
+from webotron import util
 
 
 class BucketManager:
@@ -61,7 +61,7 @@ class BucketManager:
             s3_bucket = self.s3.create_bucket(
                 Bucket=bucket_name,
                 CreateBucketConfiguration={
-                    'LocationConstraint': 'us-east-2'
+                    'LocationConstraint': self.session.region_name
                 }
             )
         except ClientError as error:
@@ -137,7 +137,8 @@ class BucketManager:
         elif len(hashes) == 1:
             return '"{}"'.format(hashes[0].hexdigest())
         else:
-            hash = self.hash_data(reduce(lambda x, y: x + y, (h.digest() for h in hashes)))
+            digests = (h.digest() for h in hashes)
+            hash = self.hash_data(reduce(lambda x, y: x + y, digests))
             return '"{}-{}"'.format(hash.hexdigest(), len(hashes))
 
     def upload_file(self, bucket, path, key):
@@ -146,7 +147,6 @@ class BucketManager:
 
         etag = self.gen_etag(path)
         if self.manifest.get(key, '') == etag:
-            print("Skipping {}, etags match".format(key))
             return
 
         return bucket.upload_file(
